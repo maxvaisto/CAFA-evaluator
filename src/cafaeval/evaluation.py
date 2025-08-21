@@ -5,6 +5,7 @@ import multiprocessing as mp
 from cafaeval.parser import obo_parser, gt_parser, pred_parser
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
+from joblib import Parallel, delayed
 
 
 # Return a mask for all the predictions (matrix) >= tau
@@ -35,7 +36,7 @@ def compute_confusion_matrix(tau_arr, g, pred, toi, n_gt, ic_arr=None):
     for i, tau in enumerate(tau_arr):
 
         # Filter predictions based on tau threshold
-        p = solidify_prediction(pred.matrix[:, toi], tau)
+        p = solidify_prediction(pred, tau)
 
         # Terms subsets
         intersection = np.logical_and(p, g)  # TP
@@ -80,17 +81,22 @@ def compute_metrics(pred, gt, tau_arr, toi, ic_arr=None, n_cpu=0):
 
     columns = ["n", "tp", "fp", "fn", "pr", "rc"]
     g = gt.matrix[:, toi]
+    pred_sub = pred.matrix[:, toi]
+
     # Simple metrics
     if ic_arr is None:
         n_gt = g.sum(axis=1)
-        arg_lists = [[tau_arr, g, pred, toi, n_gt, None] for tau_arr in np.array_split(tau_arr, n_cpu)]
     # Weighted metrics
     else:
         n_gt = (g * ic_arr[toi]).sum(axis=1)
-        arg_lists = [[tau_arr, g, pred, toi, n_gt, ic_arr] for tau_arr in np.array_split(tau_arr, n_cpu)]
-    with mp.Pool(processes=n_cpu) as pool:
-        metrics = np.concatenate(pool.starmap(compute_confusion_matrix, arg_lists), axis=0)
 
+    tau_chunks = np.array_split(tau_arr, n_cpu)
+
+    parallel = Parallel(n_jobs=n_cpu, prefer="threads", batch_size="auto", verbose=10)
+    parts = parallel(delayed(compute_confusion_matrix)(tchunk, g, pred_sub, toi, n_gt, ic_arr)
+        for tchunk in tau_chunks
+    )
+    metrics = np.concatenate(parts, axis=0)
     return pd.DataFrame(metrics, columns=columns)
 
 
