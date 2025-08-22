@@ -2,11 +2,11 @@ import os
 import numpy as np
 import pandas as pd
 import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
 from cafaeval.parser import obo_parser, gt_parser, pred_parser
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
-from joblib import Parallel, delayed
-
 
 # Return a mask for all the predictions (matrix) >= tau
 def solidify_prediction(pred, tau):
@@ -75,27 +75,34 @@ def compute_metrics(pred, gt, tau_arr, toi, ic_arr=None, n_cpu=0):
     precision, recall, remaining uncertainty and misinformation.
     Toi is the list of terms (indexes) to be considered
     """
-    # Parallelization
     if n_cpu == 0:
         n_cpu = mp.cpu_count()
 
     columns = ["n", "tp", "fp", "fn", "pr", "rc"]
+
+    # Slice once and reuse (shared by all threads)
     g = gt.matrix[:, toi]
     pred_sub = pred.matrix[:, toi]
+    w = None if ic_arr is None else ic_arr[toi]
 
-    # Simple metrics
-    if ic_arr is None:
-        n_gt = g.sum(axis=1)
-    # Weighted metrics
-    else:
-        n_gt = (g * ic_arr[toi]).sum(axis=1)
+    # Precompute n_gt once
+    n_gt = g.sum(axis=1) if w is None else (g * w).sum(axis=1)
 
-    tau_chunks = np.array_split(tau_arr, n_cpu)
+    # Don’t start more workers than chunks
+    n_workers = min(n_cpu, len(tau_arr))
+    tau_chunks = np.array_split(tau_arr, n_workers)
 
-    parallel = Parallel(n_jobs=n_cpu, prefer="threads", batch_size="auto", verbose=10)
-    parts = parallel(delayed(compute_confusion_matrix)(tchunk, g, pred_sub, toi, n_gt, ic_arr)
-        for tchunk in tau_chunks
-    )
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        parts = list(ex.map(
+            compute_confusion_matrix,
+            tau_chunks,
+            repeat(g),
+            repeat(pred_sub),
+            repeat(toi),
+            repeat(n_gt),
+            repeat(w)
+        ))
+
     metrics = np.concatenate(parts, axis=0)
     return pd.DataFrame(metrics, columns=columns)
 
