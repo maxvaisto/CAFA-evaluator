@@ -2,10 +2,11 @@ import os
 import numpy as np
 import pandas as pd
 import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
 from cafaeval.parser import obo_parser, gt_parser, pred_parser
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
-
 
 # Return a mask for all the predictions (matrix) >= tau
 def solidify_prediction(pred, tau):
@@ -35,7 +36,7 @@ def compute_confusion_matrix(tau_arr, g, pred, toi, n_gt, ic_arr=None):
     for i, tau in enumerate(tau_arr):
 
         # Filter predictions based on tau threshold
-        p = solidify_prediction(pred.matrix[:, toi], tau)
+        p = solidify_prediction(pred, tau)
 
         # Terms subsets
         intersection = np.logical_and(p, g)  # TP
@@ -74,23 +75,35 @@ def compute_metrics(pred, gt, tau_arr, toi, ic_arr=None, n_cpu=0):
     precision, recall, remaining uncertainty and misinformation.
     Toi is the list of terms (indexes) to be considered
     """
-    # Parallelization
     if n_cpu == 0:
         n_cpu = mp.cpu_count()
 
     columns = ["n", "tp", "fp", "fn", "pr", "rc"]
-    g = gt.matrix[:, toi]
-    # Simple metrics
-    if ic_arr is None:
-        n_gt = g.sum(axis=1)
-        arg_lists = [[tau_arr, g, pred, toi, n_gt, None] for tau_arr in np.array_split(tau_arr, n_cpu)]
-    # Weighted metrics
-    else:
-        n_gt = (g * ic_arr[toi]).sum(axis=1)
-        arg_lists = [[tau_arr, g, pred, toi, n_gt, ic_arr] for tau_arr in np.array_split(tau_arr, n_cpu)]
-    with mp.Pool(processes=n_cpu) as pool:
-        metrics = np.concatenate(pool.starmap(compute_confusion_matrix, arg_lists), axis=0)
 
+    # Slice once and reuse (shared by all threads)
+    g = gt.matrix[:, toi]
+    pred_sub = pred.matrix[:, toi]
+    w = None if ic_arr is None else ic_arr[toi]
+
+    # Precompute n_gt once
+    n_gt = g.sum(axis=1) if w is None else (g * w).sum(axis=1)
+
+    # Don’t start more workers than chunks
+    n_workers = min(n_cpu, len(tau_arr))
+    tau_chunks = np.array_split(tau_arr, n_workers)
+
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        parts = list(ex.map(
+            compute_confusion_matrix,
+            tau_chunks,
+            repeat(g),
+            repeat(pred_sub),
+            repeat(toi),
+            repeat(n_gt),
+            repeat(w)
+        ))
+
+    metrics = np.concatenate(parts, axis=0)
     return pd.DataFrame(metrics, columns=columns)
 
 
