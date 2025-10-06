@@ -25,7 +25,7 @@ def compute_s(ru, mi):
     # return np.where(np.isnan(ru), mi, np.sqrt(ru + np.nan_to_num(mi)))
 
 
-def compute_confusion_matrix(tau_arr, g, pred, toi, n_gt, ic_arr=None):
+def compute_confusion_matrix(tau_arr, g, pred, n_gt, ic_arr=None):
     """
     Perform the evaluation at the matrix level for all tau thresholds
     The calculation is
@@ -45,10 +45,10 @@ def compute_confusion_matrix(tau_arr, g, pred, toi, n_gt, ic_arr=None):
 
         # Weighted evaluation
         if ic_arr is not None:
-            p = p * ic_arr[toi]
-            intersection = intersection * ic_arr[toi]  # TP
-            mis = mis * ic_arr[toi]  # FP, predicted but not in the ground truth
-            remaining = remaining * ic_arr[toi]  # FN, not predicted but in the ground truth
+            p = p * ic_arr
+            intersection = intersection * ic_arr  # TP
+            mis = mis * ic_arr  # FP, predicted but not in the ground truth
+            remaining = remaining * ic_arr  # FN, not predicted but in the ground truth
 
         n_pred = p.sum(axis=1)  # TP + FP
         n_intersection = intersection.sum(axis=1)  # TP
@@ -98,7 +98,6 @@ def compute_metrics(pred, gt, tau_arr, toi, ic_arr=None, n_cpu=0):
             tau_chunks,
             repeat(g),
             repeat(pred_sub),
-            repeat(toi),
             repeat(n_gt),
             repeat(w)
         ))
